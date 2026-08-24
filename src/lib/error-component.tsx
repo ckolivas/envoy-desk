@@ -1,4 +1,4 @@
-import type { ErrorComponentProps } from "@tanstack/react-router";
+import { Navigate, type ErrorComponentProps } from "@tanstack/react-router";
 import { TriangleAlert } from "lucide-react";
 
 export function AppErrorComponent({ error }: ErrorComponentProps) {
@@ -13,4 +13,9 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
       </p>
     </main>
   );
+}
+
+/** Envoy is a single desk — unknown paths just go home. */
+export function AppNotFoundComponent() {
+  return <Navigate to="/" replace />;
 }

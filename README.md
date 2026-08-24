@@ -1,6 +1,6 @@
 # Envoy
 
-A Discord operator desk on IRC. One nick, one bot, many channel pairs.
+A Discord operator desk on IRC. One bot, many IRC networks, many channel pairs.
 
 Open the desk, patch in a Discord bot and an IRC nick, then map each IRC
 channel to a Discord channel on the same server. Chat flows both ways. Images

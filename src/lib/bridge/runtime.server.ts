@@ -11,6 +11,7 @@ import type {
   BridgeEvent,
   ChannelLink,
   DeskMessage,
+  IrcNetwork,
   LiveStatus,
 } from "./types";
 import { filledLinks, normalizeConfig } from "./types";
@@ -18,12 +19,14 @@ import { filledLinks, normalizeConfig } from "./types";
 type Runtime = {
   config: BridgeConfig;
   links: ChannelLink[];
+  servers: IrcNetwork[];
   discord: DiscordClient | null;
-  irc: IrcClient | null;
+  ircs: Map<string, IrcClient>;
+  ircState: Map<string, { state: LiveStatus["irc"]; detail: string }>;
   status: LiveStatus;
   messages: DeskMessage[];
   events: BridgeEvent[];
-  recentIrcOut: { text: string; at: number; channel: string }[];
+  recentIrcOut: { text: string; at: number; channel: string; serverId: string }[];
   seq: number;
 };
 
@@ -52,8 +55,10 @@ function getRuntime(): Runtime {
     g.__envoyRuntime = {
       config: {} as BridgeConfig,
       links: [],
+      servers: [],
       discord: null,
-      irc: null,
+      ircs: new Map(),
+      ircState: new Map(),
       status: emptyStatus(),
       messages: [],
       events: [],
@@ -81,19 +86,36 @@ function pushMsg(r: Runtime, msg: DeskMessage) {
   if (r.messages.length > 400) r.messages.splice(0, r.messages.length - 400);
 }
 
-function rememberIrcOut(r: Runtime, text: string, channel: string) {
+function rememberIrcOut(r: Runtime, text: string, channel: string, serverId: string) {
   const now = Date.now();
-  r.recentIrcOut.push({ text, at: now, channel: channel.toLowerCase() });
+  r.recentIrcOut.push({
+    text,
+    at: now,
+    channel: channel.toLowerCase(),
+    serverId,
+  });
   r.recentIrcOut = r.recentIrcOut.filter((x) => now - x.at < 30_000);
 }
 
-function wasEcho(r: Runtime, nick: string, text: string, channel: string): boolean {
-  const me = (r.irc?.currentNick || r.config.ircNick).toLowerCase();
-  if (nick.toLowerCase() !== me) return false;
+function wasEcho(
+  r: Runtime,
+  nick: string,
+  text: string,
+  channel: string,
+  serverId: string,
+): boolean {
+  const client = r.ircs.get(serverId);
+  const server = r.servers.find((s) => s.id === serverId);
+  const me = (client?.currentNick || server?.nick || "").toLowerCase();
+  if (!me || nick.toLowerCase() !== me) return false;
   const now = Date.now();
   const key = channel.toLowerCase();
   const hit = r.recentIrcOut.find(
-    (x) => x.text === text && x.channel === key && now - x.at < 30_000,
+    (x) =>
+      x.text === text &&
+      x.channel === key &&
+      x.serverId === serverId &&
+      now - x.at < 30_000,
   );
   if (hit) {
     r.recentIrcOut = r.recentIrcOut.filter((x) => x !== hit);
@@ -102,9 +124,12 @@ function wasEcho(r: Runtime, nick: string, text: string, channel: string): boole
   return false;
 }
 
-function linkByIrc(r: Runtime, channel: string): ChannelLink | undefined {
+function linkByIrc(r: Runtime, serverId: string, channel: string): ChannelLink | undefined {
   const name = ircChannelName(channel).toLowerCase();
-  return r.links.find((l) => ircChannelName(l.ircChannel).toLowerCase() === name);
+  return r.links.find(
+    (l) =>
+      l.serverId === serverId && ircChannelName(l.ircChannel).toLowerCase() === name,
+  );
 }
 
 function linkByDiscord(r: Runtime, channelId: string): ChannelLink | undefined {
@@ -116,6 +141,30 @@ function destOf(link: ChannelLink) {
     channelId: link.discordChannelId.trim(),
     webhookUrl: link.discordWebhookUrl.trim() || undefined,
   };
+}
+
+function clientFor(r: Runtime, serverId: string): IrcClient | undefined {
+  return r.ircs.get(serverId) ?? [...r.ircs.values()][0];
+}
+
+function refreshIrcStatus(r: Runtime) {
+  const states = [...r.ircState.values()];
+  if (states.length === 0) {
+    r.status.irc = "idle";
+    r.status.ircDetail = "Off";
+    return;
+  }
+  if (states.every((s) => s.state === "online")) r.status.irc = "online";
+  else if (states.some((s) => s.state === "connecting")) r.status.irc = "connecting";
+  else if (states.some((s) => s.state === "online")) r.status.irc = "online";
+  else r.status.irc = "error";
+  r.status.ircDetail = states.map((s) => s.detail).join(" · ");
+}
+
+function disconnectIrc(r: Runtime) {
+  for (const client of r.ircs.values()) client.disconnect();
+  r.ircs.clear();
+  r.ircState.clear();
 }
 
 export function snapshot(): {
@@ -130,9 +179,8 @@ export function snapshot(): {
 export async function stopBridge(): Promise<LiveStatus> {
   const r = getRuntime();
   r.discord?.disconnect();
-  r.irc?.disconnect();
+  disconnectIrc(r);
   r.discord = null;
-  r.irc = null;
   r.status = emptyStatus();
   pushEvent(r, { kind: "info", summary: "Bridge stopped" });
   return r.status;
@@ -143,11 +191,11 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
   const links = filledLinks(config);
   const r = getRuntime();
   r.discord?.disconnect();
-  r.irc?.disconnect();
+  disconnectIrc(r);
   r.discord = null;
-  r.irc = null;
   r.config = config;
   r.links = links;
+  r.servers = config.servers;
   r.messages = [];
   r.events = [];
   r.recentIrcOut = [];
@@ -156,7 +204,7 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
     discord: "connecting",
     irc: "connecting",
     discordDetail: "Opening gateway",
-    ircDetail: `Connecting ${config.ircHost}:${config.ircPort}`,
+    ircDetail: "Connecting IRC",
     lastError: "",
     startedAt: Date.now(),
     stats: { ircToDiscord: 0, discordToIrc: 0, imagesAsLinks: 0 },
@@ -167,15 +215,18 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
   if (config.ownerOnly && !config.discordUserId.trim()) {
     throw new Error("Your Discord user ID is required when relaying only your posts");
   }
-  if (!config.ircHost.trim()) throw new Error("IRC host is required");
-  if (!config.ircNick.trim()) throw new Error("IRC nick is required");
   if (links.length === 0) {
     throw new Error("Add at least one IRC ↔ Discord channel pair");
   }
 
-  const ircChannels = links.map((l) => ircChannelName(l.ircChannel));
-  const discordIds = links.map((l) => l.discordChannelId.trim());
+  const byServer = new Map<string, ChannelLink[]>();
+  for (const link of links) {
+    const list = byServer.get(link.serverId) ?? [];
+    list.push(link);
+    byServer.set(link.serverId, list);
+  }
 
+  const discordIds = links.map((l) => l.discordChannelId.trim());
   const discord = new DiscordClient({
     token: config.discordToken,
     channelIds: discordIds,
@@ -196,38 +247,55 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
     },
   });
 
-  const irc = new IrcClient({
-    host: config.ircHost.trim(),
-    port: Number(config.ircPort) || (config.ircTls ? 6697 : 6667),
-    useTls: config.ircTls,
-    nick: config.ircNick.trim(),
-    channels: ircChannels,
-    serverPassword: config.ircServerPassword.trim() || undefined,
-    nickservPassword: config.ircNickservPassword.trim() || undefined,
-    onLog: (line) => pushEvent(r, { kind: "info", summary: line }),
-    onClose: (reason) => {
-      r.status.irc = "error";
-      r.status.ircDetail = reason;
-      r.status.lastError = reason;
-      pushEvent(r, { kind: "error", summary: `IRC: ${reason}` });
-    },
-    onReady: (nick) => {
-      r.status.irc = "online";
-      r.status.ircDetail = `${nick} · ${ircChannels.join(" ")}`;
-      pushEvent(r, {
-        kind: "info",
-        summary: `IRC joined ${ircChannels.join(", ")} as ${nick}`,
-      });
-    },
-    onMessage: (msg) => {
-      void handleIrc(r, msg);
-    },
-  });
-
   r.discord = discord;
-  r.irc = irc;
   discord.connect();
-  irc.connect();
+
+  for (const [serverId, serverLinks] of byServer) {
+    const server = config.servers.find((s) => s.id === serverId);
+    if (!server) continue;
+    const nick = server.nick.trim();
+    const host = server.host.trim();
+    if (!host) throw new Error("IRC host is required");
+    if (!nick) throw new Error(`IRC nick is required for ${host}`);
+    const channels = serverLinks.map((l) => ircChannelName(l.ircChannel));
+    r.ircState.set(serverId, {
+      state: "connecting",
+      detail: `${nick}@${host}`,
+    });
+    const irc = new IrcClient({
+      host,
+      port: Number(server.port) || (server.tls ? 6697 : 6667),
+      useTls: server.tls,
+      nick,
+      channels,
+      serverPassword: server.serverPassword.trim() || undefined,
+      nickservPassword: server.nickservPassword.trim() || undefined,
+      onLog: (line) => pushEvent(r, { kind: "info", summary: `${host}: ${line}` }),
+      onClose: (reason) => {
+        r.ircState.set(serverId, { state: "error", detail: `${nick}@${host} ${reason}` });
+        r.status.lastError = `${host}: ${reason}`;
+        refreshIrcStatus(r);
+        pushEvent(r, { kind: "error", summary: `IRC ${host}: ${reason}` });
+      },
+      onReady: (joinedNick) => {
+        r.ircState.set(serverId, {
+          state: "online",
+          detail: `${joinedNick}@${host}`,
+        });
+        refreshIrcStatus(r);
+        pushEvent(r, {
+          kind: "info",
+          summary: `IRC ${host} joined ${channels.join(", ")} as ${joinedNick}`,
+        });
+      },
+      onMessage: (msg) => {
+        void handleIrc(r, { ...msg, serverId });
+      },
+    });
+    r.ircs.set(serverId, irc);
+    irc.connect();
+  }
+  refreshIrcStatus(r);
   return r.status;
 }
 
@@ -259,6 +327,7 @@ async function handleDiscord(
     pushEvent(r, { kind: "skip", summary: "Empty Discord message" });
     return;
   }
+  const irc = clientFor(r, link.serverId);
   const ircChan = ircChannelName(link.ircChannel);
   const pairId = nid("pair", r);
   const at = Date.now();
@@ -276,14 +345,14 @@ async function handleDiscord(
   });
   const lines = splitIrcLines(packed.text);
   for (const line of lines) {
-    r.irc?.say(line, ircChan);
-    rememberIrcOut(r, line, ircChan);
+    irc?.say(line, ircChan);
+    rememberIrcOut(r, line, ircChan, link.serverId);
   }
   pushMsg(r, {
     id: nid("irc", r),
     side: "irc",
     at: at + 20,
-    nick: r.irc?.currentNick || r.config.ircNick,
+    nick: irc?.currentNick || r.servers.find((s) => s.id === link.serverId)?.nick || "",
     text: packed.text,
     kind: "chat",
     attachments: msg.attachments,
@@ -307,14 +376,14 @@ async function handleDiscord(
 
 async function handleIrc(
   r: Runtime,
-  msg: { nick: string; text: string; isAction: boolean; target: string },
+  msg: { nick: string; text: string; isAction: boolean; target: string; serverId: string },
 ) {
-  const link = linkByIrc(r, msg.target);
+  const link = linkByIrc(r, msg.serverId, msg.target);
   if (!link) {
     pushEvent(r, { kind: "skip", summary: `Skipped ${msg.target} (not mapped)` });
     return;
   }
-  if (wasEcho(r, msg.nick, msg.text, msg.target)) {
+  if (wasEcho(r, msg.nick, msg.text, msg.target, msg.serverId)) {
     pushEvent(r, { kind: "skip", summary: "Suppressed IRC echo" });
     return;
   }
@@ -366,23 +435,34 @@ async function handleIrc(
   });
 }
 
-export async function injectIrc(text: string, ircChannel?: string): Promise<void> {
+export async function injectIrc(
+  text: string,
+  ircChannel?: string,
+  serverId?: string,
+): Promise<void> {
   const r = getRuntime();
-  if (!r.irc?.isReady) throw new Error("IRC is not connected");
-  const channel = ircChannelName(ircChannel || r.irc.channel);
-  const link = linkByIrc(r, channel) ?? r.links[0];
+  const link =
+    (serverId && ircChannel
+      ? linkByIrc(r, serverId, ircChannel)
+      : undefined) ??
+    r.links.find((l) => !serverId || l.serverId === serverId) ??
+    r.links[0];
+  const sid = serverId || link?.serverId || "";
+  const irc = clientFor(r, sid);
+  if (!irc?.isReady) throw new Error("IRC is not connected");
+  const channel = ircChannelName(ircChannel || link?.ircChannel || irc.channel);
   const lines = splitIrcLines(text);
   const pairId = nid("pair", r);
   const at = Date.now();
   for (const line of lines) {
-    r.irc.say(line, channel);
-    rememberIrcOut(r, line, channel);
+    irc.say(line, channel);
+    rememberIrcOut(r, line, channel, sid);
   }
   pushMsg(r, {
     id: nid("irc", r),
     side: "irc",
     at,
-    nick: r.irc.currentNick,
+    nick: irc.currentNick,
     text: text,
     kind: "chat",
     attachments: [],

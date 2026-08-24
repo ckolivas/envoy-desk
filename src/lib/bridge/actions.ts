@@ -1,8 +1,19 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
+const serverSchema = z.object({
+  id: z.string(),
+  host: z.string(),
+  port: z.number(),
+  tls: z.boolean(),
+  nick: z.string(),
+  serverPassword: z.string(),
+  nickservPassword: z.string(),
+});
+
 const linkSchema = z.object({
   id: z.string(),
+  serverId: z.string(),
   ircChannel: z.string(),
   discordChannelId: z.string(),
   discordWebhookUrl: z.string(),
@@ -22,6 +33,7 @@ const configSchema = z.object({
   ircServerPassword: z.string(),
   ircNickservPassword: z.string(),
   ownerOnly: z.boolean(),
+  servers: z.array(serverSchema),
   links: z.array(linkSchema),
 });
 
@@ -57,9 +69,15 @@ export const pollLiveBridge = createServerFn({ method: "GET" })
   });
 
 export const sendLiveIrc = createServerFn({ method: "POST" })
-  .validator(z.object({ text: z.string(), ircChannel: z.string() }))
+  .validator(
+    z.object({
+      text: z.string(),
+      ircChannel: z.string(),
+      serverId: z.string(),
+    }),
+  )
   .handler(async ({ data }) => {
     const { injectIrc } = await import("./runtime.server");
-    await injectIrc(data.text, data.ircChannel);
+    await injectIrc(data.text, data.ircChannel, data.serverId);
     return { ok: true as const };
   });

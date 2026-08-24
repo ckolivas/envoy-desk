@@ -7,8 +7,8 @@ import { SetupPanel } from "@/components/desk/setup-panel";
 import { Button } from "@/components/ui/button";
 import { pollLiveBridge, sendLiveIrc } from "@/lib/bridge/actions";
 import { channelLabel, discordLabel, pairCaption } from "@/lib/bridge/format";
-import { startAmbientIrc, stopAmbientIrc, useDesk, visibleLinks } from "@/lib/bridge/store";
-import type { BridgeEvent, ChannelLink, LiveStatus } from "@/lib/bridge/types";
+import { startAmbientIrc, stopAmbientIrc, useDesk, visibleLinks, visibleServers } from "@/lib/bridge/store";
+import type { BridgeEvent, ChannelLink, IrcNetwork, LiveStatus } from "@/lib/bridge/types";
 import { cn } from "@/lib/utils";
 
 type Tab = "irc" | "discord" | "log";
@@ -53,10 +53,12 @@ function Mark() {
 
 function PairSwitcher({
   links,
+  servers,
   activeId,
   onSelect,
 }: {
   links: ChannelLink[];
+  servers: IrcNetwork[];
   activeId: string;
   onSelect: (id: string) => void;
 }) {
@@ -65,6 +67,7 @@ function PairSwitcher({
     <div className="flex gap-1 overflow-x-auto border-b border-fg/10 px-3 py-2 md:px-6">
       {links.map((link) => {
         const active = link.id === activeId;
+        const host = servers.find((s) => s.id === link.serverId)?.host;
         return (
           <button
             key={link.id}
@@ -75,7 +78,7 @@ function PairSwitcher({
               active ? "bg-elevated text-fg" : "text-muted hover:text-fg",
             )}
           >
-            {pairCaption(link.ircChannel, link.discordChannelId)}
+            {pairCaption(link.ircChannel, link.discordChannelId, host)}
           </button>
         );
       })}
@@ -102,7 +105,9 @@ export function OperatorDesk() {
 
   const isLive = live.mode === "live";
   const links = useMemo(() => visibleLinks(isLive, config), [isLive, config]);
+  const servers = useMemo(() => visibleServers(isLive, config), [isLive, config]);
   const active = links.find((l) => l.id === activeLinkId) ?? links[0];
+  const activeServer = servers.find((s) => s.id === active?.serverId) ?? servers[0];
   const pairId = active?.id;
   const pairMessages = messages.filter((m) => !m.linkId || !pairId || m.linkId === pairId);
   const ircMessages = pairMessages.filter((m) => m.side === "irc");
@@ -157,7 +162,11 @@ export function OperatorDesk() {
     if (isLive) {
       try {
         await sendLiveIrc({
-          data: { text, ircChannel: active?.ircChannel ?? "" },
+          data: {
+            text,
+            ircChannel: active?.ircChannel ?? "",
+            serverId: active?.serverId ?? "",
+          },
         });
       } catch {
         postFromIrc(text);
@@ -207,7 +216,12 @@ export function OperatorDesk() {
         </p>
       ) : null}
 
-      <PairSwitcher links={links} activeId={active?.id ?? ""} onSelect={setActiveLinkId} />
+      <PairSwitcher
+        links={links}
+        servers={servers}
+        activeId={active?.id ?? ""}
+        onSelect={setActiveLinkId}
+      />
 
       <div className="flex gap-1 border-b border-fg/10 px-3 py-2 md:hidden">
         {(["discord", "irc", "log"] as Tab[]).map((id) => (
@@ -230,7 +244,7 @@ export function OperatorDesk() {
           <ChannelPane
             side="irc"
             title={ircTitle}
-            subtitle={isLive ? `${config.ircHost}` : "Demo channel · everyone speaks"}
+            subtitle={isLive ? `${activeServer?.host ?? config.ircHost}` : activeServer?.host ?? "Demo network"}
             status={isLive ? live.irc : "demo"}
             messages={mounted ? ircMessages : []}
           >

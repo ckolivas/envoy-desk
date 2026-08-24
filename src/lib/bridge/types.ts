@@ -13,8 +13,19 @@ export type Attachment = {
   isImage: boolean;
 };
 
+export type IrcNetwork = {
+  id: string;
+  host: string;
+  port: number;
+  tls: boolean;
+  nick: string;
+  serverPassword: string;
+  nickservPassword: string;
+};
+
 export type ChannelLink = {
   id: string;
+  serverId: string;
   ircChannel: string;
   discordChannelId: string;
   discordWebhookUrl: string;
@@ -65,6 +76,7 @@ export type BridgeConfig = {
   ircServerPassword: string;
   ircNickservPassword: string;
   ownerOnly: boolean;
+  servers: IrcNetwork[];
   links: ChannelLink[];
 };
 
@@ -72,62 +84,125 @@ export function makeLinkId(): string {
   return `link-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-export function emptyLink(id = makeLinkId()): ChannelLink {
-  return { id, ircChannel: "", discordChannelId: "", discordWebhookUrl: "" };
+export function makeServerId(): string {
+  return `irc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function emptyServer(id = makeServerId()): IrcNetwork {
+  return {
+    id,
+    host: "irc.libera.chat",
+    port: 6697,
+    tls: true,
+    nick: "",
+    serverPassword: "",
+    nickservPassword: "",
+  };
+}
+
+export function emptyLink(serverId: string, id = makeLinkId()): ChannelLink {
+  return { id, serverId, ircChannel: "", discordChannelId: "", discordWebhookUrl: "" };
+}
+
+function asServer(raw: Partial<IrcNetwork> | undefined, fallback: IrcNetwork): IrcNetwork {
+  return {
+    id: raw?.id || fallback.id,
+    host: raw?.host ?? fallback.host,
+    port: Number(raw?.port) || fallback.port,
+    tls: raw?.tls ?? fallback.tls,
+    nick: raw?.nick ?? fallback.nick,
+    serverPassword: raw?.serverPassword ?? fallback.serverPassword,
+    nickservPassword: raw?.nickservPassword ?? fallback.nickservPassword,
+  };
 }
 
 export function normalizeConfig(config: BridgeConfig): BridgeConfig {
+  const legacy = emptyServer("primary-irc");
+  legacy.host = config.ircHost || legacy.host;
+  legacy.port = Number(config.ircPort) || legacy.port;
+  legacy.tls = config.ircTls ?? legacy.tls;
+  legacy.nick = config.ircNick || legacy.nick;
+  legacy.serverPassword = config.ircServerPassword || "";
+  legacy.nickservPassword = config.ircNickservPassword || "";
+
+  let servers = (config.servers ?? []).map((s, i) =>
+    asServer(s, i === 0 ? legacy : emptyServer(s.id)),
+  );
+  if (servers.length === 0) servers = [legacy];
+
+  const primaryId = servers[0]!.id;
   const links = (config.links ?? []).map((l) => ({
     id: l.id || makeLinkId(),
+    serverId: l.serverId || primaryId,
     ircChannel: l.ircChannel ?? "",
     discordChannelId: l.discordChannelId ?? "",
     discordWebhookUrl: l.discordWebhookUrl ?? "",
   }));
   if (links.length === 0) {
-    links.push({
-      id: "primary",
-      ircChannel: config.ircChannel ?? "",
-      discordChannelId: config.discordChannelId ?? "",
-      discordWebhookUrl: config.discordWebhookUrl ?? "",
-    });
+    links.push(emptyLink(primaryId, "primary"));
   } else {
     const first = links[0]!;
     if (!first.ircChannel.trim()) first.ircChannel = config.ircChannel ?? "";
     if (!first.discordChannelId.trim()) first.discordChannelId = config.discordChannelId ?? "";
     if (!first.discordWebhookUrl.trim()) first.discordWebhookUrl = config.discordWebhookUrl ?? "";
   }
-  const primary = links[0]!;
+
+  const ids = new Set(servers.map((s) => s.id));
+  for (const link of links) {
+    if (!ids.has(link.serverId)) link.serverId = primaryId;
+  }
+
+  const primary = servers[0]!;
+  const head = links[0]!;
   return {
     ...config,
+    servers,
     links,
-    ircChannel: primary.ircChannel,
-    discordChannelId: primary.discordChannelId,
-    discordWebhookUrl: primary.discordWebhookUrl,
+    ircHost: primary.host,
+    ircPort: primary.port,
+    ircTls: primary.tls,
+    ircNick: primary.nick,
+    ircServerPassword: primary.serverPassword,
+    ircNickservPassword: primary.nickservPassword,
+    ircChannel: head.ircChannel,
+    discordChannelId: head.discordChannelId,
+    discordWebhookUrl: head.discordWebhookUrl,
   };
 }
 
 export function filledLinks(config: BridgeConfig): ChannelLink[] {
-  return normalizeConfig(config).links.filter(
-    (l) => l.ircChannel.trim().length > 0 && l.discordChannelId.trim().length > 0,
+  const cfg = normalizeConfig(config);
+  const ready = new Set(
+    cfg.servers.filter((s) => s.host.trim() && s.nick.trim()).map((s) => s.id),
+  );
+  return cfg.links.filter(
+    (l) =>
+      ready.has(l.serverId) &&
+      l.ircChannel.trim().length > 0 &&
+      l.discordChannelId.trim().length > 0,
   );
 }
 
-export const defaultConfig = (): BridgeConfig => ({
-  discordToken: "",
-  discordAppId: "",
-  discordChannelId: "",
-  discordUserId: "",
-  discordWebhookUrl: "",
-  ircHost: "irc.libera.chat",
-  ircPort: 6697,
-  ircTls: true,
-  ircNick: "",
-  ircChannel: "",
-  ircServerPassword: "",
-  ircNickservPassword: "",
-  ownerOnly: true,
-  links: [emptyLink("primary")],
-});
+export const defaultConfig = (): BridgeConfig => {
+  const server = emptyServer("primary-irc");
+  return {
+    discordToken: "",
+    discordAppId: "",
+    discordChannelId: "",
+    discordUserId: "",
+    discordWebhookUrl: "",
+    ircHost: server.host,
+    ircPort: server.port,
+    ircTls: server.tls,
+    ircNick: "",
+    ircChannel: "",
+    ircServerPassword: "",
+    ircNickservPassword: "",
+    ownerOnly: true,
+    servers: [server],
+    links: [emptyLink(server.id, "primary")],
+  };
+};
 
 export type LiveStatus = {
   mode: BridgeMode;

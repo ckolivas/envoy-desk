@@ -4,25 +4,48 @@ import {
   fakeCdnLink,
   ircPayloadToDiscord,
 } from "./format";
-import type { Attachment, BridgeEvent, ChannelLink, DeskMessage } from "./types";
+import type { Attachment, BridgeEvent, ChannelLink, DeskMessage, IrcNetwork } from "./types";
 
-let seq = 0;
-const nid = (p: string) => `${p}-${++seq}-${Math.random().toString(36).slice(2, 7)}`;
+export const DEMO_SERVERS: IrcNetwork[] = [
+  {
+    id: "demo-libera",
+    host: "irc.libera.chat",
+    port: 6697,
+    tls: true,
+    nick: "you",
+    serverPassword: "",
+    nickservPassword: "",
+  },
+  {
+    id: "demo-oftc",
+    host: "irc.oftc.net",
+    port: 6697,
+    tls: true,
+    nick: "you",
+    serverPassword: "",
+    nickservPassword: "",
+  },
+];
 
 export const DEMO_LINKS: ChannelLink[] = [
   {
     id: "demo-main",
+    serverId: "demo-libera",
     ircChannel: "#envoy-demo",
     discordChannelId: "mirror",
     discordWebhookUrl: "",
   },
   {
     id: "demo-ops",
+    serverId: "demo-oftc",
     ircChannel: "#ops",
     discordChannelId: "ops",
     discordWebhookUrl: "",
   },
 ];
+
+let seq = 0;
+const nid = (p: string) => `${p}-${++seq}-${Math.random().toString(36).slice(2, 7)}`;
 
 type DemoNick = {
   name: string;

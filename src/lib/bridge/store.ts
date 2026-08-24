@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import {
   attachmentsFromFiles,
   DEMO_LINKS,
+  DEMO_SERVERS,
   pairMessages,
   randomIrcLine,
   seedDemo,
@@ -11,12 +12,14 @@ import {
 import {
   defaultConfig,
   emptyLink,
+  emptyServer,
   filledLinks,
   normalizeConfig,
   type BridgeConfig,
   type BridgeEvent,
   type ChannelLink,
   type DeskMessage,
+  type IrcNetwork,
   type LiveStatus,
 } from "./types";
 
@@ -36,6 +39,9 @@ type DeskState = {
   setYou: (you: string) => void;
   setActiveLinkId: (id: string) => void;
   patchConfig: (patch: Partial<BridgeConfig>) => void;
+  patchServer: (id: string, patch: Partial<IrcNetwork>) => void;
+  addServer: () => void;
+  removeServer: (id: string) => void;
   patchLink: (id: string, patch: Partial<ChannelLink>) => void;
   addLink: () => void;
   removeLink: (id: string) => void;
@@ -91,15 +97,41 @@ export const useDesk = create<DeskState>()(
       setSetupOpen: (setupOpen) => set({ setupOpen }),
       setYou: (you) => {
         const trimmed = you.trim() || YOU_DEFAULT;
+        const config = normalizeConfig(get().config);
+        const servers = config.servers.map((s, i) =>
+          i === 0 && !s.nick.trim() ? { ...s, nick: trimmed } : s,
+        );
         set({
           you: trimmed,
-          config: { ...get().config, ircNick: get().config.ircNick || trimmed },
+          config: normalizeConfig({ ...config, servers, ircNick: config.ircNick || trimmed }),
         });
       },
       setActiveLinkId: (activeLinkId) => set({ activeLinkId }),
       patchConfig: (patch) => {
         const merged = { ...get().config, ...patch };
         set({ config: normalizeConfig(merged) });
+      },
+      patchServer: (id, patch) => {
+        const config = normalizeConfig(get().config);
+        const servers = config.servers.map((s) => (s.id === id ? { ...s, ...patch } : s));
+        set({ config: normalizeConfig({ ...config, servers }) });
+      },
+      addServer: () => {
+        const config = normalizeConfig(get().config);
+        const next = emptyServer();
+        const nick = config.servers[0]?.nick.trim();
+        if (nick) next.nick = nick;
+        set({ config: normalizeConfig({ ...config, servers: [...config.servers, next] }) });
+      },
+      removeServer: (id) => {
+        const config = normalizeConfig(get().config);
+        let servers = config.servers.filter((s) => s.id !== id);
+        if (servers.length === 0) servers = [emptyServer("primary-irc")];
+        const fallback = servers[0]!.id;
+        const links = config.links.map((l) =>
+          l.serverId === id ? { ...l, serverId: fallback } : l,
+        );
+        set({ config: normalizeConfig({ ...config, servers, links }) });
       },
       patchLink: (id, patch) => {
         const config = normalizeConfig(get().config);
@@ -108,13 +140,16 @@ export const useDesk = create<DeskState>()(
       },
       addLink: () => {
         const config = normalizeConfig(get().config);
-        const links = [...config.links, emptyLink()];
+        const serverId = config.servers[0]?.id ?? emptyServer("primary-irc").id;
+        const links = [...config.links, emptyLink(serverId)];
         set({ config: normalizeConfig({ ...config, links }) });
       },
       removeLink: (id) => {
         const config = normalizeConfig(get().config);
         let links = config.links.filter((l) => l.id !== id);
-        if (links.length === 0) links = [emptyLink("primary")];
+        if (links.length === 0) {
+          links = [emptyLink(config.servers[0]?.id ?? "primary-irc", "primary")];
+        }
         const activeLinkId =
           get().activeLinkId === id ? links[0]!.id : get().activeLinkId;
         set({ config: normalizeConfig({ ...config, links }), activeLinkId });
@@ -199,7 +234,7 @@ export const useDesk = create<DeskState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({ config: s.config, you: s.you }),
       skipHydration: true,
-      version: 2,
+      version: 3,
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<Pick<DeskState, "config" | "you">>;
         return {
@@ -253,4 +288,9 @@ export function visibleLinks(isLive: boolean, config: BridgeConfig): ChannelLink
     return live.length ? live : normalizeConfig(config).links;
   }
   return DEMO_LINKS;
+}
+
+export function visibleServers(isLive: boolean, config: BridgeConfig): IrcNetwork[] {
+  if (isLive) return normalizeConfig(config).servers;
+  return DEMO_SERVERS;
 }

@@ -147,6 +147,18 @@ export function ircChannelName(raw: string): string {
   return v.startsWith("#") ? v : `#${v}`;
 }
 
-export function pairCaption(ircChannel: string, discordChannelId: string): string {
-  return `${channelLabel(ircChannel, "#irc")} · ${discordLabel(discordChannelId)}`;
+export function pairCaption(
+  ircChannel: string,
+  discordChannelId: string,
+  host?: string,
+): string {
+  const pair = `${channelLabel(ircChannel, "#irc")} · ${discordLabel(discordChannelId)}`;
+  if (!host?.trim()) return pair;
+  return `${networkLabel(host)} ${pair}`;
+}
+
+export function networkLabel(host: string): string {
+  const h = host.trim().toLowerCase();
+  if (!h) return "irc";
+  return h.replace(/^irc\./, "").split(".")[0] || h;
 }

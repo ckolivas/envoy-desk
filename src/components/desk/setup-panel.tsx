@@ -68,6 +68,9 @@ export function SetupPanel() {
   const patchLink = useDesk((s) => s.patchLink);
   const addLink = useDesk((s) => s.addLink);
   const removeLink = useDesk((s) => s.removeLink);
+  const patchServer = useDesk((s) => s.patchServer);
+  const addServer = useDesk((s) => s.addServer);
+  const removeServer = useDesk((s) => s.removeServer);
   const you = useDesk((s) => s.you);
   const setYou = useDesk((s) => s.setYou);
   const connecting = useDesk((s) => s.connecting);
@@ -79,6 +82,7 @@ export function SetupPanel() {
   const [copied, setCopied] = useState(false);
 
   const links = normalizeConfig(config).links;
+  const servers = normalizeConfig(config).servers;
   const invite = useMemo(() => inviteUrl(config.discordAppId), [config.discordAppId]);
   const liveOn =
     live.mode === "live" &&
@@ -242,62 +246,104 @@ export function SetupPanel() {
           </section>
 
           <section className="space-y-3">
-            <h3 className="text-xs font-medium uppercase tracking-kicker text-subtle">IRC</h3>
-            <Field label="Nick">
-              <Input
-                value={config.ircNick}
-                onChange={set("ircNick")}
-                placeholder={you || "envoy"}
-                autoComplete="off"
-              />
-            </Field>
-            <div className="flex gap-2">
-              <div className="min-w-0 flex-1">
-                <Field label="Host">
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-kicker text-subtle">IRC</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted">
+                One nick per network. Add another server if you need a second network.
+              </p>
+            </div>
+            {servers.map((server, index) => (
+              <div
+                key={server.id}
+                className="space-y-3 rounded-lg bg-elevated p-3 shadow-[var(--shadow-border)]"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-mono text-2xs uppercase tracking-kicker text-subtle">
+                    Server {index + 1}
+                  </p>
+                  {servers.length > 1 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-9 px-2 text-muted"
+                      onClick={() => removeServer(server.id)}
+                      aria-label={`Remove server ${index + 1}`}
+                    >
+                      <Trash2 className="size-3.5" />
+                      Remove
+                    </Button>
+                  ) : null}
+                </div>
+                <Field label="Nick">
                   <Input
-                    value={config.ircHost}
-                    onChange={set("ircHost")}
-                    placeholder="irc.libera.chat"
+                    value={server.nick}
+                    onChange={(e) => patchServer(server.id, { nick: e.target.value })}
+                    placeholder={you || "envoy"}
+                    autoComplete="off"
+                  />
+                </Field>
+                <div className="flex gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Field label="Host">
+                      <Input
+                        value={server.host}
+                        onChange={(e) => patchServer(server.id, { host: e.target.value })}
+                        placeholder="irc.libera.chat"
+                        autoComplete="off"
+                      />
+                    </Field>
+                  </div>
+                  <div className="w-24 shrink-0">
+                    <Field label="Port">
+                      <Input
+                        type="number"
+                        value={server.port}
+                        onChange={(e) =>
+                          patchServer(server.id, { port: Number(e.target.value) })
+                        }
+                        min={1}
+                        max={65535}
+                      />
+                    </Field>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-4 rounded-lg bg-bg px-3 py-3 shadow-[var(--shadow-border)]">
+                  <p className="text-sm font-medium">TLS</p>
+                  <Switch
+                    checked={server.tls}
+                    onCheckedChange={(v) =>
+                      patchServer(server.id, { tls: v, port: v ? 6697 : 6667 })
+                    }
+                    aria-label={`Use TLS on server ${index + 1}`}
+                  />
+                </div>
+                <Field label="Server password (optional)">
+                  <Input
+                    type="password"
+                    value={server.serverPassword}
+                    onChange={(e) =>
+                      patchServer(server.id, { serverPassword: e.target.value })
+                    }
+                    autoComplete="off"
+                  />
+                </Field>
+                <Field label="NickServ password (optional)">
+                  <Input
+                    type="password"
+                    value={server.nickservPassword}
+                    onChange={(e) =>
+                      patchServer(server.id, { nickservPassword: e.target.value })
+                    }
                     autoComplete="off"
                   />
                 </Field>
               </div>
-              <div className="w-24 shrink-0">
-                <Field label="Port">
-                  <Input
-                    type="number"
-                    value={config.ircPort}
-                    onChange={set("ircPort")}
-                    min={1}
-                    max={65535}
-                  />
-                </Field>
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-4 rounded-lg bg-elevated px-3 py-3 shadow-[var(--shadow-border)]">
-              <p className="text-sm font-medium">TLS</p>
-              <Switch
-                checked={config.ircTls}
-                onCheckedChange={(v) => patch({ ircTls: v, ircPort: v ? 6697 : 6667 })}
-                aria-label="Use TLS"
-              />
-            </div>
-            <Field label="Server password (optional)">
-              <Input
-                type="password"
-                value={config.ircServerPassword}
-                onChange={set("ircServerPassword")}
-                autoComplete="off"
-              />
-            </Field>
-            <Field label="NickServ password (optional)">
-              <Input
-                type="password"
-                value={config.ircNickservPassword}
-                onChange={set("ircNickservPassword")}
-                autoComplete="off"
-              />
-            </Field>
+            ))}
+            <Button type="button" variant="outline" className="w-full" onClick={addServer}>
+              <Plus className="size-4" />
+              Add another server
+            </Button>
           </section>
 
           <section className="space-y-3">
@@ -306,7 +352,7 @@ export function SetupPanel() {
                 Channel pairs
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-muted">
-                Each IRC channel maps to one Discord channel on the same server.
+                Each pair maps one IRC channel on one network to one Discord channel.
               </p>
             </div>
             {links.map((link, index) => (
@@ -332,6 +378,22 @@ export function SetupPanel() {
                     </Button>
                   ) : null}
                 </div>
+                {servers.length > 1 ? (
+                  <Field label="IRC server">
+                    <select
+                      className="h-11 w-full rounded-md bg-bg px-3 text-sm text-fg shadow-[var(--shadow-border)] focus-visible:outline-none focus-visible:shadow-[0_0_0_2px_var(--color-bg),0_0_0_4px_var(--color-fg)]"
+                      value={link.serverId}
+                      onChange={(e) => patchLink(link.id, { serverId: e.target.value })}
+                    >
+                      {servers.map((server) => (
+                        <option key={server.id} value={server.id}>
+                          {server.host || "new server"}
+                          {server.nick ? ` · ${server.nick}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                ) : null}
                 <Field label="IRC channel">
                   <Input
                     value={link.ircChannel}

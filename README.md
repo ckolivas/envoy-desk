@@ -47,7 +47,10 @@ Environment=PORT=8080
 ```
 
 Then in the browser that uses that SOCKS proxy, open `http://127.0.0.1:8080`.
-That address is the VPS, not your laptop.
+That address is the VPS, not your laptop. A hostname that resolves to loopback
+on the VPS (for example `http://local.kolivas.org:8080`) also works; Vite is
+set to allow any `Host` header.
+
 
 SOCKS must send DNS through the proxy (Firefox: “Proxy DNS when using SOCKS v5”).
 If it doesn’t, use a local forward instead and skip SOCKS for this tab:

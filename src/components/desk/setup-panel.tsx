@@ -1,4 +1,4 @@
-import { Check, Copy, LoaderCircle, Plus, Plug, Trash2, X } from "lucide-react";
+import { Check, Copy, ExternalLink, LoaderCircle, Plus, Plug, Trash2, X } from "lucide-react";
 import { useMemo, useState, type ChangeEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,31 @@ function Field({
       {hint ? <p className="text-xs leading-snug text-subtle">{hint}</p> : null}
     </div>
   );
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.left = "-9999px";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    el.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 export function SetupPanel() {
@@ -97,10 +122,15 @@ export function SetupPanel() {
 
   function copyInvite() {
     if (!invite) return;
-    void navigator.clipboard.writeText(invite);
-    setCopied(true);
-    toast("Invite link copied");
-    window.setTimeout(() => setCopied(false), 1600);
+    void copyText(invite).then((ok) => {
+      if (ok) {
+        setCopied(true);
+        toast("Invite link copied");
+        window.setTimeout(() => setCopied(false), 1600);
+      } else {
+        toast("Couldn't copy — use the link below");
+      }
+    });
   }
 
   return (
@@ -182,16 +212,33 @@ export function SetupPanel() {
                 autoComplete="off"
               />
             </Field>
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              disabled={!invite}
-              onClick={copyInvite}
-            >
-              {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-              {invite ? "Copy bot invite" : "Add an application ID to invite"}
-            </Button>
+            {invite ? (
+              <>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="min-w-0 flex-1"
+                    onClick={() => window.open(invite, "_blank", "noopener,noreferrer")}
+                  >
+                    <ExternalLink className="size-4" />
+                    Open invite
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => void copyInvite()}>
+                    {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                    Copy
+                  </Button>
+                </div>
+                <Field label="Invite URL" hint="Select and copy if the button is blocked (plain HTTP).">
+                  <Input value={invite} readOnly onFocus={(e) => e.currentTarget.select()} />
+                </Field>
+              </>
+            ) : (
+              <Button type="button" variant="outline" className="w-full" disabled>
+                <Copy className="size-4" />
+                Add an application ID to invite
+              </Button>
+            )}
           </section>
 
           <section className="space-y-3">

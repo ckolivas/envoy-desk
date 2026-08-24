@@ -36,17 +36,29 @@ Use an always-on Node host:
 Start command: `npm run dev`  
 Health / public port: whatever `$PORT` is (Envoy falls back to `8080`)
 
-After the host is up:
+### VPS, localhost only
 
-1. Open the public URL
-2. **Patch in** — bot token, your Discord user ID, IRC nick/host, channel pairs
-3. **Go live**
+If you SSH in with a SOCKS proxy, bind Envoy to loopback so it is not on the
+public internet:
 
-Credentials stay in your browser. The server only sees them when you connect,
-and only while that process is running. If the host restarts, open the desk
-and Go live again.
+```ini
+Environment=HOST=127.0.0.1
+Environment=PORT=8080
+```
 
-One process, one operator. Don't share the live URL as a public site.
+Then in the browser that uses that SOCKS proxy, open `http://127.0.0.1:8080`.
+That address is the VPS, not your laptop.
+
+SOCKS must send DNS through the proxy (Firefox: “Proxy DNS when using SOCKS v5”).
+If it doesn’t, use a local forward instead and skip SOCKS for this tab:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 your-vps
+```
+
+After the host is up, **Patch in** and **Go live**. If the process restarts,
+Go live again. One operator per process.
+
 
 ### Discord bot
 

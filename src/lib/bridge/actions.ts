@@ -1,83 +1,40 @@
-import { createServerFn } from "@tanstack/react-start";
-import { z } from "zod";
+import type { BridgeConfig, BridgeEvent, DeskMessage, LiveStatus } from "./types";
 
-const serverSchema = z.object({
-  id: z.string(),
-  host: z.string(),
-  port: z.number(),
-  tls: z.boolean(),
-  nick: z.string(),
-  serverPassword: z.string(),
-  nickservPassword: z.string(),
-});
-
-const linkSchema = z.object({
-  id: z.string(),
-  serverId: z.string(),
-  ircChannel: z.string(),
-  discordChannelId: z.string(),
-  discordWebhookUrl: z.string(),
-});
-
-const configSchema = z.object({
-  discordToken: z.string(),
-  discordAppId: z.string(),
-  discordChannelId: z.string(),
-  discordUserId: z.string(),
-  discordWebhookUrl: z.string(),
-  ircHost: z.string(),
-  ircPort: z.number(),
-  ircTls: z.boolean(),
-  ircNick: z.string(),
-  ircChannel: z.string(),
-  ircServerPassword: z.string(),
-  ircNickservPassword: z.string(),
-  ownerOnly: z.boolean(),
-  servers: z.array(serverSchema),
-  links: z.array(linkSchema),
-});
-
-export const startLiveBridge = createServerFn({ method: "POST" })
-  .validator(configSchema)
-  .handler(async ({ data }) => {
-    const { startBridge } = await import("./runtime.server");
-    return startBridge(data);
+async function post<T>(body: unknown): Promise<T> {
+  const res = await fetch("/api/bridge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
   });
-
-export const stopLiveBridge = createServerFn({ method: "POST" }).handler(async () => {
-  const { stopBridge } = await import("./runtime.server");
-  return stopBridge();
-});
-
-function after<T extends { id: string }>(list: T[], id: string): T[] {
-  if (!id) return list;
-  const i = list.findIndex((x) => x.id === id);
-  if (i === -1) return list;
-  return list.slice(i + 1);
+  const json = (await res.json().catch(() => ({}))) as { error?: string } & T;
+  if (!res.ok) throw new Error(json.error || `Bridge request failed (${res.status})`);
+  return json;
 }
 
-export const pollLiveBridge = createServerFn({ method: "GET" })
-  .validator(z.object({ sinceMessageId: z.string(), sinceEventId: z.string() }))
-  .handler(async ({ data }) => {
-    const { snapshot } = await import("./runtime.server");
-    const snap = snapshot();
-    return {
-      status: snap.status,
-      messages: after(snap.messages, data.sinceMessageId),
-      events: after(snap.events, data.sinceEventId),
-    };
-  });
+export function startLiveBridge({ data }: { data: BridgeConfig }) {
+  return post<LiveStatus>({ op: "start", config: data });
+}
 
-export const sendLiveIrc = createServerFn({ method: "POST" })
-  .validator(
-    z.object({
-      text: z.string(),
-      ircChannel: z.string(),
-      serverId: z.string(),
-    }),
-  )
-  .handler(async ({ data }) => {
-    const { injectIrc } = await import("./runtime.server");
-    await injectIrc(data.text, data.ircChannel, data.serverId);
-    return { ok: true as const };
-  });
+export function stopLiveBridge() {
+  return post<LiveStatus>({ op: "stop" });
+}
+
+export function pollLiveBridge({
+  data,
+}: {
+  data: { sinceMessageId: string; sinceEventId: string };
+}) {
+  return post<{
+    status: LiveStatus;
+    messages: DeskMessage[];
+    events: BridgeEvent[];
+  }>({ op: "poll", ...data });
+}
+
+export function sendLiveIrc({
+  data,
+}: {
+  data: { text: string; ircChannel: string; serverId: string };
+}) {
+  return post<{ ok: true }>({ op: "irc", ...data });
+}

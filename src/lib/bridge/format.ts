@@ -142,9 +142,15 @@ export function discordLabel(raw: string, fallback = "#mirror"): string {
 }
 
 export function ircChannelName(raw: string): string {
-  const v = raw.trim();
+  const v = raw.trim().split("\x07")[0] ?? "";
   if (!v) return "";
-  return v.startsWith("#") ? v : `#${v}`;
+  return v.startsWith("#") || v.startsWith("&") ? v : `#${v}`;
+}
+
+/** Compare IRC destinations: strip @+% status prefixes, ignore case. */
+export function canonicalIrcChannel(raw: string): string {
+  const stripped = raw.trim().replace(/^[~@%+]+/, "");
+  return ircChannelName(stripped).toLowerCase();
 }
 
 export function pairCaption(

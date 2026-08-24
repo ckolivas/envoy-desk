@@ -1,6 +1,7 @@
 import {
   discordPayloadToIrc,
   ircChannelName,
+  canonicalIrcChannel,
   ircPayloadToDiscord,
   splitIrcLines,
 } from "./format";
@@ -125,21 +126,36 @@ function wasEcho(
 }
 
 function linkByIrc(r: Runtime, serverId: string, channel: string): ChannelLink | undefined {
-  const name = ircChannelName(channel).toLowerCase();
-  return r.links.find(
-    (l) =>
-      l.serverId === serverId && ircChannelName(l.ircChannel).toLowerCase() === name,
+  const name = canonicalIrcChannel(channel);
+  if (!name) return undefined;
+  const onServer = r.links.filter(
+    (l) => l.serverId === serverId && canonicalIrcChannel(l.ircChannel) === name,
   );
+  if (onServer.length === 1) return onServer[0];
+  if (onServer.length > 1) return onServer[0];
+  const unique = r.links.filter((l) => canonicalIrcChannel(l.ircChannel) === name);
+  if (unique.length === 1) return unique[0];
+  return undefined;
 }
 
 function linkByDiscord(r: Runtime, channelId: string): ChannelLink | undefined {
   return r.links.find((l) => l.discordChannelId.trim() === channelId.trim());
 }
 
-function destOf(link: ChannelLink) {
+function destOf(link: ChannelLink, links: ChannelLink[]) {
+  const channelId = link.discordChannelId.trim();
+  const webhookUrl = link.discordWebhookUrl.trim();
+  const shared =
+    Boolean(webhookUrl) &&
+    links.some(
+      (l) =>
+        l.id !== link.id &&
+        l.discordWebhookUrl.trim() === webhookUrl &&
+        l.discordChannelId.trim() !== channelId,
+    );
   return {
-    channelId: link.discordChannelId.trim(),
-    webhookUrl: link.discordWebhookUrl.trim() || undefined,
+    channelId,
+    webhookUrl: shared ? undefined : webhookUrl || undefined,
   };
 }
 
@@ -217,6 +233,22 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
   }
   if (links.length === 0) {
     throw new Error("Add at least one IRC ↔ Discord channel pair");
+  }
+
+  const webhookOwners = new Map<string, string>();
+  for (const link of links) {
+    const url = link.discordWebhookUrl.trim();
+    if (!url) continue;
+    const owner = webhookOwners.get(url);
+    if (owner && owner !== link.discordChannelId.trim()) {
+      pushEvent(r, {
+        kind: "info",
+        summary:
+          "Same webhook on two Discord channels — IRC will post as the bot so it stays in the right channel. Use a unique webhook per Discord channel for IRC nicks.",
+      });
+      break;
+    }
+    webhookOwners.set(url, link.discordChannelId.trim());
   }
 
   const byServer = new Map<string, ChannelLink[]>();
@@ -403,7 +435,7 @@ async function handleIrc(
     linkId: link.id,
   });
   try {
-    const dest = destOf(link);
+    const dest = destOf(link, r.links);
     if (dest.webhookUrl) {
       const content = msg.isAction ? `_${msg.text}_` : msg.text || "·";
       await r.discord?.sendAsNick(msg.nick, content, dest);

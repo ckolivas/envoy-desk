@@ -415,7 +415,7 @@ export function SetupPanel() {
                 </Field>
                 <Field
                   label="Webhook URL (optional)"
-                  hint="If set, IRC nicks appear as Discord usernames in this pair."
+                  hint="One webhook per Discord channel. Reusing a URL always posts to the first channel."
                 >
                   <Input
                     type="password"

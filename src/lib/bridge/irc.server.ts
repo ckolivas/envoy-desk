@@ -1,6 +1,6 @@
 import net from "node:net";
 import tls from "node:tls";
-import { ircChannelName, parseIrcAction, stripIrcFormatting } from "./format";
+import { canonicalIrcChannel, ircChannelName, parseIrcAction, stripIrcFormatting } from "./format";
 
 export type IrcIncoming = {
   nick: string;
@@ -22,6 +22,7 @@ export type IrcClientOpts = {
   onMessage: (msg: IrcIncoming) => void;
   onReady: (nick: string) => void;
   onClose: (reason: string) => void;
+  onReconnecting?: (reason: string) => void;
   onLog: (line: string) => void;
 };
 
@@ -59,6 +60,8 @@ export class IrcClient {
   private queue: string[] = [];
   private drainTimer: ReturnType<typeof setInterval> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private attempt = 0;
   private joined = new Set<string>();
   readonly channels: string[];
   private channelSet: Set<string>;
@@ -67,7 +70,7 @@ export class IrcClient {
     this.desiredNick = opts.nick;
     this.nick = opts.nick;
     this.channels = opts.channels.map((c) => ircChannelName(c)).filter(Boolean);
-    this.channelSet = new Set(this.channels.map((c) => c.toLowerCase()));
+    this.channelSet = new Set(this.channels.map((c) => canonicalIrcChannel(c)));
   }
 
   get currentNick() {
@@ -84,40 +87,20 @@ export class IrcClient {
 
   connect() {
     this.closed = false;
-    const { host, port, useTls } = this.opts;
-    const onConnect = () => this.register();
-    if (useTls) {
-      this.socket = tls.connect({ host, port, servername: host }, onConnect);
-    } else {
-      this.socket = net.connect({ host, port }, onConnect);
-    }
-    this.socket.setEncoding("utf8");
-    this.socket.on("data", (chunk: string) => this.onData(chunk));
-    this.socket.on("error", (err) => {
-      this.opts.onLog(`irc error: ${err.message}`);
-    });
-    this.socket.on("close", () => {
-      this.ready = false;
-      this.stopTimers();
-      if (!this.closed) this.opts.onClose("socket closed");
-    });
-    this.drainTimer = setInterval(() => this.drain(), 900);
-    this.pingTimer = setInterval(() => {
-      if (this.socket && !this.socket.destroyed) this.raw(`PING :envoy`);
-    }, 60000);
+    this.openSocket();
   }
 
   disconnect() {
     this.closed = true;
     this.ready = false;
+    this.clearReconnect();
     this.stopTimers();
     try {
       this.raw("QUIT :Envoy signing off");
     } catch {
       /* ignore */
     }
-    this.socket?.destroy();
-    this.socket = null;
+    this.destroySocket();
   }
 
   say(text: string, channel?: string) {
@@ -126,6 +109,67 @@ export class IrcClient {
     const dest = ircChannelName(channel || this.channel);
     if (!dest) return;
     this.queue.push(`PRIVMSG ${dest} :${line}`);
+  }
+
+  private destroySocket() {
+    const sock = this.socket;
+    this.socket = null;
+    if (!sock) return;
+    sock.removeAllListeners();
+    try {
+      sock.destroy();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private openSocket() {
+    this.stopTimers();
+    this.buf = "";
+    this.joined.clear();
+    this.ready = false;
+    this.nick = this.desiredNick;
+    this.destroySocket();
+    const { host, port, useTls } = this.opts;
+    const onConnect = () => this.register();
+    const sock = useTls
+      ? tls.connect({ host, port, servername: host }, onConnect)
+      : net.connect({ host, port }, onConnect);
+    this.socket = sock;
+    sock.setEncoding("utf8");
+    sock.on("data", (chunk: string) => this.onData(chunk));
+    sock.on("error", (err) => {
+      this.opts.onLog(`irc error: ${err.message}`);
+    });
+    sock.on("close", () => {
+      if (this.socket !== sock) return;
+      this.ready = false;
+      this.stopTimers();
+      this.socket = null;
+      if (!this.closed) this.scheduleReconnect("socket closed");
+    });
+    this.drainTimer = setInterval(() => this.drain(), 900);
+    this.pingTimer = setInterval(() => {
+      if (this.socket && !this.socket.destroyed) this.raw(`PING :envoy`);
+    }, 60000);
+  }
+
+  private scheduleReconnect(reason: string) {
+    if (this.closed || this.reconnectTimer) return;
+    const delay = Math.min(30_000, 1000 * 2 ** this.attempt);
+    this.attempt += 1;
+    const wait = Math.max(1, Math.round(delay / 1000));
+    this.opts.onReconnecting?.(`reconnecting in ${wait}s`);
+    this.opts.onLog(`${reason}; retry in ${wait}s`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.closed) this.openSocket();
+    }, delay);
+  }
+
+  private clearReconnect() {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 
   private stopTimers() {
@@ -165,9 +209,10 @@ export class IrcClient {
   private markJoined(raw: string) {
     const chan = ircChannelName(raw.split("\x07")[0] ?? "");
     if (!chan) return;
-    this.joined.add(chan.toLowerCase());
+    this.joined.add(canonicalIrcChannel(chan));
     if (!this.ready) {
       this.ready = true;
+      this.attempt = 0;
       this.opts.onReady(this.nick);
     }
   }
@@ -221,14 +266,15 @@ export class IrcClient {
     if (cmd === "PRIVMSG") {
       const target = args[0] ?? "";
       const rawText = args[1] ?? "";
-      if (!this.channelSet.has(target.toLowerCase())) return;
+      const key = canonicalIrcChannel(target);
+      if (!key || !this.channelSet.has(key)) return;
       const who = nickFromPrefix(prefix);
       const parsed = parseIrcAction(rawText);
       this.opts.onMessage({
         nick: who,
         text: stripIrcFormatting(parsed.text),
         isAction: parsed.isAction,
-        target,
+        target: key,
       });
     }
   }

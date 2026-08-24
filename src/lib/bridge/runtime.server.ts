@@ -263,6 +263,11 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
     token: config.discordToken,
     channelIds: discordIds,
     onLog: (line) => pushEvent(r, { kind: "info", summary: line }),
+    onReconnecting: (reason) => {
+      r.status.discord = "connecting";
+      r.status.discordDetail = reason;
+      pushEvent(r, { kind: "info", summary: `Discord ${reason}` });
+    },
     onClose: (reason) => {
       r.status.discord = "error";
       r.status.discordDetail = reason;
@@ -303,6 +308,11 @@ export async function startBridge(raw: BridgeConfig): Promise<LiveStatus> {
       serverPassword: server.serverPassword.trim() || undefined,
       nickservPassword: server.nickservPassword.trim() || undefined,
       onLog: (line) => pushEvent(r, { kind: "info", summary: `${host}: ${line}` }),
+      onReconnecting: (reason) => {
+        r.ircState.set(serverId, { state: "connecting", detail: `${nick}@${host} ${reason}` });
+        refreshIrcStatus(r);
+        pushEvent(r, { kind: "info", summary: `IRC ${host} ${reason}` });
+      },
       onClose: (reason) => {
         r.ircState.set(serverId, { state: "error", detail: `${nick}@${host} ${reason}` });
         r.status.lastError = `${host}: ${reason}`;
